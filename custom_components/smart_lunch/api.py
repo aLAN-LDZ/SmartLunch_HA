@@ -201,3 +201,9 @@ class SmartLunchClient:
                 raise ConfigEntryAuthFailed("Session expired")
             r.raise_for_status()
             return await r.json()
+        
+    async def fetch_funding_for_day(self, day_iso: str) -> dict[str, Any]:
+        """Pobierz funding settings dla danego dnia."""
+        from .const import FUNDING_PATH_TPL
+        path = FUNDING_PATH_TPL.format(day=day_iso)
+        return await self._request_json("GET", path)        
