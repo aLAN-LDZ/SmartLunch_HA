@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import re
 import urllib.parse
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import datetime
+from typing import Any, Optional
 
-from aiohttp import ClientSession, ClientResponse, ClientTimeout
+from aiohttp import ClientSession, ClientTimeout
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -22,7 +21,6 @@ from .const import (
     USER_AGENT,
     COOKIE_KEYS,
     HTTP_TIMEOUT,
-    RETRY_STATUSES,
 )
 
 META_CSRF_RE = re.compile(r'<meta\s+name="csrf-token"\s+content="([^"]+)"', re.I)
@@ -55,7 +53,7 @@ class AuthState:
 
 
 class SmartLunchClient:
-    """Minimalny klient tylko do logowania i walidacji sesji (async)."""
+    """Minimalny klient do logowania i walidacji sesji (async)."""
 
     def __init__(
         self,
@@ -67,7 +65,7 @@ class SmartLunchClient:
     ) -> None:
         self.hass = hass
         self.email = email
-        self._password = password  # używane wyłącznie transientnie przy loginie/reauth; nie zapisujemy do entry
+        self._password = password  # tylko transientnie
         self.base = base.rstrip("/")
         self.session: ClientSession = session or async_get_clientsession(hass, verify_ssl=True)
         self.auth = AuthState()
@@ -101,9 +99,6 @@ class SmartLunchClient:
         return h
 
     async def login(self) -> dict[str, Any]:
-        """Pełne logowanie login+hasło; zwraca dict z cookies i exp.
-        WYMAGA przekazanego hasła do konstruktora; nie przechowujemy go w entry.
-        """
         if not self._password:
             raise ConfigEntryAuthFailed("Password required for login")
         await self._preflight_csrf()
@@ -156,12 +151,3 @@ class SmartLunchClient:
         self.session.cookie_jar.clear()
         for name, val in cookies.items():
             self.session.cookie_jar.update_cookies({name: val}, response_url=self.base)
-
-    async def _request_json(self, method: str, path: str, **kwargs: Any) -> Any:
-        """Wersja bez 'cichego relogu' – jeśli 401, HA wywoła reauth flow."""
-        url = f"{self.base}{path}"
-        async with self.session.request(method, url, headers=self._headers, timeout=ClientTimeout(total=HTTP_TIMEOUT), **kwargs) as r:
-            if r.status in (401, 403, 419):
-                raise ConfigEntryAuthFailed("Session expired")
-            r.raise_for_status()
-            return await r.json()

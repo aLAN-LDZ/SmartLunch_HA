@@ -17,10 +17,6 @@ DATA_SCHEMA = vol.Schema(
         vol.Required("password"): str,
         vol.Optional("base", default=DEFAULT_BASE): str,
     }
-): str,
-        vol.Required("password"): str,
-        vol.Optional("base", default=DEFAULT_BASE): str,
-    }
 )
 
 
@@ -43,6 +39,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         try:
             tokens = await _do_login(self.hass, user_input)
+        except ValueError:
+            errors["base"] = "invalid_auth"
+        except Exception:
+            errors["base"] = "cannot_connect"
+
+        if errors:
+            return self.async_show_form(step_id="user", data_schema=DATA_SCHEMA, errors=errors)
 
         await self.async_set_unique_id(user_input["email"].lower())
         self._abort_if_unique_id_configured()
@@ -54,15 +57,20 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "cookies": tokens.get("cookies", {}),
             "remember_exp": tokens.get("remember_exp"),
         }
-        return self.async_create_entry(title=f"SmartLunch ({user_input['email']})", data=entry_data)", data=entry_data)
+        return self.async_create_entry(
+            title=f"SmartLunch ({user_input['email']})",
+            data=entry_data,
+        )
 
     async def async_step_reauth(self, entry_data: dict[str, Any]) -> FlowResult:
         """Wejście reauth – znamy email, prosimy tylko o hasło i odświeżamy cookies."""
-        self._reauth_entry = self.hass.config_entries.async_get_entry(self.context.get("entry_id"))
+        # entry_id jest w context; pobierz istniejący entry
+        entry = self.hass.config_entries.async_get_entry(self.context.get("entry_id"))
+        self._reauth_entry = entry
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        entry = self._reauth_entry
+        entry = getattr(self, "_reauth_entry", None)
         assert entry is not None
         if user_input is None:
             return self.async_show_form(
@@ -71,7 +79,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 description_placeholders={"email": entry.data.get("email", "")},
             )
         # wykonaj login transientnie
-        client = SmartLunchClient(self.hass, entry.data["email"], user_input["password"], entry.data.get("base", DEFAULT_BASE))
+        client = SmartLunchClient(
+            self.hass, entry.data["email"], user_input["password"], entry.data.get("base", DEFAULT_BASE)
+        )
         tokens = await client.login()
         new_data = dict(entry.data)
         new_data["cookies"] = tokens.get("cookies", {})
