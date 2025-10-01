@@ -233,7 +233,6 @@ class SmartLunchClient:
     
     async def fetch_menu_categories(self, day: str, hour: str, delivery_place_id: int) -> list[dict]:
         """Pobierz kategorie menu dla (miejsce, dzień, godzina)."""
-        from yarl import URL
         from .const import MENU_CATEGORIES_PATH
 
         params = {
@@ -241,8 +240,6 @@ class SmartLunchClient:
             "hour": hour,
             "delivery_place_id": str(delivery_place_id),
         }
-        
-        url = str(URL(self.base + MENU_CATEGORIES_PATH).with_query(params))
-        data = await self._request_json("GET", url)
-        # API zwraca listę lub obiekt – normalizujemy do listy
+
+        data = await self._request_json("GET", MENU_CATEGORIES_PATH, params=params)
         return data if isinstance(data, list) else []
