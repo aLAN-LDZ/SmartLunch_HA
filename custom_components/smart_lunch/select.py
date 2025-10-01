@@ -19,9 +19,10 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 PARALLEL_UPDATES = 0
 
-# Klucze w entry.options – zapis lokalnych wyborów
+# Klucze w entry.options – tu trzymamy lokalne wybory
 OPT_SELECTED_PLACE_ID = "selected_delivery_place_id"
 OPT_SELECTED_DAY = "selected_delivery_day"
+OPT_SELECTED_HOUR = "selected_delivery_hour"
 
 
 def _safe_update_entry_options(hass: HomeAssistant, entry: ConfigEntry, patch: dict[str, Any]) -> None:
@@ -31,14 +32,14 @@ def _safe_update_entry_options(hass: HomeAssistant, entry: ConfigEntry, patch: d
     hass.config_entries.async_update_entry(entry, options=new_options)
 
 
-# ===========================
-# SELECT 1: MIEJSCE DOSTAWY
-# ===========================
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
     client = data["client"]
     device_info = data.get("device_info") or {}
 
+    # ------------------------------
+    # SELECT 1: MIEJSCE DOSTAWY
+    # ------------------------------
     async def _async_update_places() -> dict[str, Any]:
         """Pobierz listę miejsc dostawy (ZAWSZE z serwera)."""
         try:
@@ -84,51 +85,39 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         if server_default_id is not None:
             _safe_update_entry_options(hass, entry, {OPT_SELECTED_PLACE_ID: server_default_id})
 
-    # ===========================
-    # SELECT 2: DATA DOSTAWY
-    # ===========================
+    # ------------------------------
+    # SELECT 2: DATA DOSTAWY (zależny od miejsca)
+    # ------------------------------
     async def _async_update_days() -> dict[str, Any]:
-        """Pobierz dostępne daty dla aktualnie wybranego miejsca (ZAWSZE z serwera)."""
+        """Pobierz dostępne daty dla aktualnego miejsca (ZAWSZE z serwera)."""
         try:
-            # 1) Aktualne miejsce – lokalny wybór albo fallback do serwerowego domyślnego
+            # Aktualne miejsce – lokalny wybór albo fallback do serwerowego
             current_place_id = entry.options.get(OPT_SELECTED_PLACE_ID)
             if current_place_id is None:
-                # fallback: weź z ostatnich danych koordynatora miejsc
                 current_place_id = place_coordinator.data.get("server_default_id")
 
             if current_place_id is None:
-                # spróbuj jeszcze zaciągnąć miejsca, gdyby coś się wyścigało
-                pd = await client.fetch_delivery_places()
-                current_place_id = client.choose_default_delivery_place_id(pd)
-
-            if current_place_id is None:
-                # brak miejsca – brak dat
+                # brak miejsca → brak dat
                 return {"place_id": None, "dates": []}
 
-            try:
-                place_id_int = int(current_place_id)
-            except Exception:
-                place_id_int = current_place_id  # i tak rzuci niżej, ale próbujemy
+            place_id_int = int(current_place_id)
 
-            # 2) Pobierz daty z serwera dla miejsca
+            # Pobierz daty dla miejsca
             dd = await client.fetch_delivery_dates(place_id_int)
-            # spodziewany format: {"delivery_dates": [{"date":"YYYY-MM-DD","hours":[...]}]}
             dates = []
             for item in dd.get("delivery_dates", []):
                 d = item.get("date")
-                if not d:
-                    continue
-                # możesz filtrować po hours != [] jeśli chcesz tylko faktycznie dostępne sloty
-                dates.append(d)
+                if d:
+                    dates.append(d)
 
-            # 3) Obecny lokalny wybór (jeśli wybrana data nie jest już dostępna – current_option=None)
+            # Obecny lokalny wybór dnia – tylko jeśli nadal dostępny
             selected_day = entry.options.get(OPT_SELECTED_DAY)
             if selected_day not in dates:
                 selected_day = None
 
             return {
                 "place_id": place_id_int,
-                "dates": dates,           # list[str] w ISO YYYY-MM-DD
+                "dates": dates,           # list[str] YYYY-MM-DD
                 "selected_day": selected_day,
                 "raw": dd,
             }
@@ -147,29 +136,112 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     day_entity = SmartLunchDeliveryDaySelect(hass, day_coordinator, entry, device_info)
     async_add_entities([day_entity])
 
-    # Gdy zmieni się wybór miejsca – odśwież listę dat (i wyczyść lokalny wybór daty jeśli już nie pasuje)
+    # ------------------------------
+    # SELECT 3: GODZINA DOSTAWY (zależny od miejsca i dnia)
+    # ------------------------------
+    async def _async_update_hours() -> dict[str, Any]:
+        """Pobierz dostępne godziny dla aktualnego miejsca i dnia (ZAWSZE z serwera)."""
+        try:
+            # 1) Miejsce – jak wyżej
+            current_place_id = entry.options.get(OPT_SELECTED_PLACE_ID)
+            if current_place_id is None:
+                current_place_id = place_coordinator.data.get("server_default_id")
+            if current_place_id is None:
+                return {"place_id": None, "day": None, "hours": []}
+            place_id_int = int(current_place_id)
+
+            # 2) Dzień – musi być wybrany
+            current_day = entry.options.get(OPT_SELECTED_DAY)
+            if not current_day:
+                # Jeśli brak wyboru dnia, nie mamy jak wyliczyć godzin
+                return {"place_id": place_id_int, "day": None, "hours": []}
+
+            # 3) Pobierz daty (z godzinami) dla miejsca i wyciągnij godziny dla wybranego dnia
+            dd = await client.fetch_delivery_dates(place_id_int)
+            hours: list[str] = []
+            for item in dd.get("delivery_dates", []):
+                if item.get("date") == current_day:
+                    for h in item.get("hours", []) or []:
+                        if isinstance(h, str):
+                            hours.append(h)
+                    break
+
+            # 4) Obecny lokalny wybór godziny – tylko jeśli nadal dostępna
+            selected_hour = entry.options.get(OPT_SELECTED_HOUR)
+            if selected_hour not in hours:
+                selected_hour = None
+
+            return {
+                "place_id": place_id_int,
+                "day": current_day,
+                "hours": hours,                 # list[str] "HH:MM"
+                "selected_hour": selected_hour,
+                "raw": dd,
+            }
+        except Exception as e:
+            raise UpdateFailed(str(e)) from e
+
+    hour_coordinator = DataUpdateCoordinator(
+        hass,
+        logger=_LOGGER,
+        name="smart_lunch_delivery_hour_select",
+        update_method=_async_update_hours,
+        update_interval=timedelta(minutes=15),
+    )
+    await hour_coordinator.async_config_entry_first_refresh()
+
+    hour_entity = SmartLunchDeliveryHourSelect(hass, hour_coordinator, entry, device_info)
+    async_add_entities([hour_entity])
+
+    # ------------------------------
+    # Reakcje na zmiany: miejsce → odśwież daty i godziny; dzień → odśwież godziny
+    # ------------------------------
     @callback
-    async def _refresh_days_on_place_change(hass: HomeAssistant, updated_entry: ConfigEntry) -> None:
+    async def _on_options_changed(hass: HomeAssistant, updated_entry: ConfigEntry) -> None:
         if updated_entry.entry_id != entry.entry_id:
             return
+
+        changed = False
+
+        # Jeśli zmieniło się miejsce – odśwież daty i godziny oraz wyczyść niekompatybilne wybory
         if OPT_SELECTED_PLACE_ID in updated_entry.options:
             await day_coordinator.async_request_refresh()
-            # Jeśli nowa lista dat nie zawiera poprzednio wybranej – skasuj lokalny wybór
-            data = day_coordinator.data or {}
-            selected_day = updated_entry.options.get(OPT_SELECTED_DAY)
-            dates = data.get("dates") or []
-            if selected_day and selected_day not in dates:
+            await hour_coordinator.async_request_refresh()
+            changed = True
+            # walidacja: jeśli wybrany day nie jest na liście, wyczyść
+            dc = day_coordinator.data or {}
+            sel_day = updated_entry.options.get(OPT_SELECTED_DAY)
+            if sel_day and sel_day not in (dc.get("dates") or []):
                 _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_DAY: None})
+            # po zmianie miejsca dotychczasowa godzina też raczej nie pasuje
+            if OPT_SELECTED_HOUR in updated_entry.options:
+                _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_HOUR: None})
 
-    # subskrypcja zmian options (dla obu encji)
-    entry.add_update_listener(_refresh_days_on_place_change)
+        # Jeśli zmienił się dzień – odśwież godziny i ewentualnie wyczyść godzinę
+        if OPT_SELECTED_DAY in updated_entry.options:
+            await hour_coordinator.async_request_refresh()
+            changed = True
+            hc = hour_coordinator.data or {}
+            sel_hour = updated_entry.options.get(OPT_SELECTED_HOUR)
+            if sel_hour and sel_hour not in (hc.get("hours") or []):
+                _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_HOUR: None})
 
+        if changed:
+            # Zapisane wyżej patche już zawołają write_ha_state przez listener’y encji
+            return
+
+    entry.add_update_listener(_on_options_changed)
+
+
+# ===========================
+# Encje
+# ===========================
 
 class SmartLunchDeliveryPlaceSelect(CoordinatorEntity, SelectEntity):
     """Select: lokalny wybór miejsca dostawy (opcje z serwera)."""
 
     _attr_has_entity_name = True
-    _attr_name = "Miejsce dostawy"
+    _attr_name = "Miejsce dostawy (lokalny wybór)"
     _attr_icon = "mdi:map-marker"
     _attr_state_class = None
 
@@ -238,7 +310,6 @@ class SmartLunchDeliveryPlaceSelect(CoordinatorEntity, SelectEntity):
         # zapisz lokalnie i odśwież widok
         _safe_update_entry_options(self.hass, self._entry, {OPT_SELECTED_PLACE_ID: int(place_id)})
         self.async_write_ha_state()
-        # daty odświeżą się przez listener w async_setup_entry
 
     @property
     def extra_state_attributes(self):
@@ -255,7 +326,7 @@ class SmartLunchDeliveryDaySelect(CoordinatorEntity, SelectEntity):
     """Select: lokalny wybór daty dostawy (opcje z serwera, zależne od miejsca)."""
 
     _attr_has_entity_name = True
-    _attr_name = "Data dostawy"
+    _attr_name = "Data dostawy (lokalny wybór)"
     _attr_icon = "mdi:calendar"
     _attr_state_class = None
 
@@ -277,7 +348,6 @@ class SmartLunchDeliveryDaySelect(CoordinatorEntity, SelectEntity):
         if entry.entry_id != self._entry.entry_id:
             return
         self._entry = entry
-        # gdy zmieniły się options, to bieżący wybór mógł się zmienić
         self.async_write_ha_state()
 
     @property
@@ -296,13 +366,11 @@ class SmartLunchDeliveryDaySelect(CoordinatorEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
-        # preferuj lokalny wybór jeśli nadal dostępny
         sel = self._entry.options.get(OPT_SELECTED_DAY)
         data = self.coordinator.data or {}
         dates = data.get("dates") or []
         if sel in dates:
             return sel
-        # albo „brak wybranej”
         return None
 
     async def async_select_option(self, option: str) -> None:
@@ -320,4 +388,77 @@ class SmartLunchDeliveryDaySelect(CoordinatorEntity, SelectEntity):
         return {
             "place_id": data.get("place_id"),
             "dates_count": len(data.get("dates") or []),
+        }
+
+
+class SmartLunchDeliveryHourSelect(CoordinatorEntity, SelectEntity):
+    """Select: lokalny wybór godziny dostawy (opcje z serwera, zależne od miejsca i dnia)."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Godzina dostawy (lokalny wybór)"
+    _attr_icon = "mdi:clock-time-four-outline"
+    _attr_state_class = None
+
+    def __init__(self, hass: HomeAssistant, coordinator: DataUpdateCoordinator, entry: ConfigEntry, device_info: dict) -> None:
+        super().__init__(coordinator)
+        self.hass = hass
+        self._entry = entry
+        self._device_info = device_info
+        self._attr_unique_id = f"{entry.entry_id}_delivery_hour_select"
+        self._unsub_options_listener = entry.add_update_listener(self._async_entry_updated)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_options_listener:
+            self._unsub_options_listener()
+            self._unsub_options_listener = None
+
+    @callback
+    async def _async_entry_updated(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        if entry.entry_id != self._entry.entry_id:
+            return
+        self._entry = entry
+        self.async_write_ha_state()
+
+    @property
+    def device_info(self) -> dict:
+        return self._device_info
+
+    @property
+    def available(self) -> bool:
+        data = self.coordinator.data or {}
+        return bool(data.get("hours"))
+
+    @property
+    def options(self) -> list[str]:
+        data = self.coordinator.data or {}
+        return data.get("hours") or []
+
+    @property
+    def current_option(self) -> str | None:
+        sel = self._entry.options.get(OPT_SELECTED_HOUR)
+        data = self.coordinator.data or {}
+        hours = data.get("hours") or []
+        if sel in hours:
+            return sel
+        return None
+
+    async def async_select_option(self, option: str) -> None:
+        data = self.coordinator.data or {}
+        hours = data.get("hours") or []
+        if option not in hours:
+            _LOGGER.warning(
+                "Wybrana godzina '%s' nie jest dostępna dla place_id=%s i day=%s",
+                option, data.get("place_id"), data.get("day")
+            )
+            return
+        _safe_update_entry_options(self.hass, self._entry, {OPT_SELECTED_HOUR: option})
+        self.async_write_ha_state()
+
+    @property
+    def extra_state_attributes(self):
+        data = self.coordinator.data or {}
+        return {
+            "place_id": data.get("place_id"),
+            "day": data.get("day"),
+            "hours_count": len(data.get("hours") or []),
         }
