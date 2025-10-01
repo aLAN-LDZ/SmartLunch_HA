@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta, date
+from datetime import timedelta, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -21,6 +21,9 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import DOMAIN
 
+# do dekodowania expiry z ciasteczka
+from .api import decode_remember_token_expiry
+
 _LOGGER = logging.getLogger(__name__)
 PARALLEL_UPDATES = 0
 
@@ -29,12 +32,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     data = hass.data[DOMAIN][entry.entry_id]
     client = data["client"]
 
-    async def _async_update_data() -> dict[str, Any]:
+    # ---- KOORDYNATOR: FUNDING (zapyta API) ----
+    async def _async_update_funding() -> dict[str, Any]:
         try:
             today = date.today().isoformat()
             payload = await client.fetch_funding_for_day(today)
-            # oczekiwany kształt:
-            # {"funding_setting": {"available_fundings": {"daily_cents": int, "monthly_cents": int}}}
             fs = (payload or {}).get("funding_setting") or {}
             avail = fs.get("available_fundings") or {}
             return {
@@ -46,17 +48,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         except Exception as e:
             raise UpdateFailed(str(e)) from e
 
-    coordinator = DataUpdateCoordinator(
+    funding_coordinator = DataUpdateCoordinator(
         hass,
         logger=_LOGGER,
         name="smart_lunch_funding",
-        update_method=_async_update_data,
+        update_method=_async_update_funding,
         update_interval=timedelta(minutes=30),
     )
+    await funding_coordinator.async_config_entry_first_refresh()
 
-    await coordinator.async_config_entry_first_refresh()
+    # ---- KOORDYNATOR: TOKEN EXPIRY (bez sieci – tylko odczyt cookie) ----
+    async def _async_update_token() -> dict[str, Any]:
+        try:
+            jar = {c.key: c.value for c in client.session.cookie_jar}
+            token = jar.get("remember_user_token")
+            exp: datetime | None = decode_remember_token_expiry(token) if token else None
+            return {"expiry": exp}
+        except Exception as e:
+            # nie powinno się zdarzyć, ale gdyby… nie wysadzamy całej platformy
+            _LOGGER.debug("Token expiry update failed: %s", e)
+            return {"expiry": None}
 
-    entities = [SmartLunchMonthlyFundingRemainingSensor(coordinator, entry)]
+    token_coordinator = DataUpdateCoordinator(
+        hass,
+        logger=_LOGGER,
+        name="smart_lunch_token_expiry",
+        update_method=_async_update_token,
+        update_interval=timedelta(minutes=5),
+    )
+    await token_coordinator.async_config_entry_first_refresh()
+
+    entities = [
+        SmartLunchMonthlyFundingRemainingSensor(funding_coordinator, entry),
+        SmartLunchTokenExpirySensor(token_coordinator, entry),
+    ]
     async_add_entities(entities)
 
 
@@ -84,7 +109,6 @@ class SmartLunchMonthlyFundingRemainingSensor(CoordinatorEntity, SensorEntity):
         cents = data.get("monthly_cents")
         if cents is None:
             return None
-        # użyj Decimal -> 2 miejsca po przecinku, zwróć float żeby HA ładnie rysował
         pln = (Decimal(int(cents)) / Decimal(100)).quantize(Decimal("0.01"))
         return float(pln)
 
@@ -107,3 +131,33 @@ class SmartLunchMonthlyFundingRemainingSensor(CoordinatorEntity, SensorEntity):
                 (Decimal(int(monthly_cents)) / Decimal(100)).quantize(Decimal("0.01"))
             )
         return attrs
+
+
+class SmartLunchTokenExpirySensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
+    _attr_name = "Token – data wygaśnięcia"
+    _attr_icon = "mdi:timer-sand-complete"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_state_class = None  # timestamp nie powinien mieć state_class
+
+    def __init__(self, coordinator: DataUpdateCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_token_expiry"
+
+    @property
+    def available(self) -> bool:
+        data = self.coordinator.data or {}
+        return data.get("expiry") is not None
+
+    @property
+    def native_value(self):
+        """Zwraca timezone-aware datetime (UTC) lub None."""
+        data = self.coordinator.data or {}
+        exp: datetime | None = data.get("expiry")
+        return exp  # HA oczekuje obiektu datetime dla device_class=timestamp
+
+    @property
+    def extra_state_attributes(self):
+        # nic szczególnego – można dopisać surowe cookie albo źródło, ale to wrażliwe
+        return {}
