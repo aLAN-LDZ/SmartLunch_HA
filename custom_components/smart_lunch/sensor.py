@@ -1,6 +1,7 @@
 # custom_components/smart_lunch/sensor.py
 from __future__ import annotations
 
+import logging
 from datetime import timedelta, date
 from decimal import Decimal
 from typing import Any
@@ -20,6 +21,7 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import DOMAIN
 
+_LOGGER = logging.getLogger(__name__)
 PARALLEL_UPDATES = 0
 
 
@@ -31,10 +33,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         try:
             today = date.today().isoformat()
             payload = await client.fetch_funding_for_day(today)
-            # spodziewana struktura:
-            # {"funding_setting": {"available_fundings": {"daily_cents": int, "monthly_cents": int}, ...}}
-            fs = payload.get("funding_setting", {}) or {}
-            avail = fs.get("available_fundings", {}) or {}
+            # oczekiwany kształt:
+            # {"funding_setting": {"available_fundings": {"daily_cents": int, "monthly_cents": int}}}
+            fs = (payload or {}).get("funding_setting") or {}
+            avail = fs.get("available_fundings") or {}
             return {
                 "daily_cents": avail.get("daily_cents"),
                 "monthly_cents": avail.get("monthly_cents"),
@@ -46,17 +48,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     coordinator = DataUpdateCoordinator(
         hass,
-        logger=hass.logger,
+        logger=_LOGGER,
         name="smart_lunch_funding",
         update_method=_async_update_data,
-        update_interval=timedelta(minutes=30),  # funding raczej nie zmienia się co minutę
+        update_interval=timedelta(minutes=30),
     )
 
     await coordinator.async_config_entry_first_refresh()
 
-    entities = [
-        SmartLunchMonthlyFundingRemainingSensor(coordinator, entry),
-    ]
+    entities = [SmartLunchMonthlyFundingRemainingSensor(coordinator, entry)]
     async_add_entities(entities)
 
 
@@ -84,7 +84,7 @@ class SmartLunchMonthlyFundingRemainingSensor(CoordinatorEntity, SensorEntity):
         cents = data.get("monthly_cents")
         if cents is None:
             return None
-        # unikamy problemów z float – Decimal → 2 miejsca po przecinku
+        # użyj Decimal -> 2 miejsca po przecinku, zwróć float żeby HA ładnie rysował
         pln = (Decimal(int(cents)) / Decimal(100)).quantize(Decimal("0.01"))
         return float(pln)
 
@@ -93,10 +93,17 @@ class SmartLunchMonthlyFundingRemainingSensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data or {}
         daily_cents = data.get("daily_cents")
         monthly_cents = data.get("monthly_cents")
-        return {
-            "daily_limit_pln": None if daily_cents is None else float(Decimal(int(daily_cents)) / Decimal(100)),
-            "monthly_remaining_pln": None if monthly_cents is None else float(Decimal(int(monthly_cents)) / Decimal(100)),
+        attrs = {
+            "source_day": data.get("source_day"),
             "daily_cents": daily_cents,
             "monthly_cents": monthly_cents,
-            "source_day": data.get("source_day"),
         }
+        if daily_cents is not None:
+            attrs["daily_limit_pln"] = float(
+                (Decimal(int(daily_cents)) / Decimal(100)).quantize(Decimal("0.01"))
+            )
+        if monthly_cents is not None:
+            attrs["monthly_remaining_pln"] = float(
+                (Decimal(int(monthly_cents)) / Decimal(100)).quantize(Decimal("0.01"))
+            )
+        return attrs
