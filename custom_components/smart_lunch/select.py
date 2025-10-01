@@ -195,39 +195,46 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     # ------------------------------
     # Reakcje na zmiany: miejsce → odśwież daty i godziny; dzień → odśwież godziny
+    # Z porównaniem poprzednich wartości (naprawia "odbicie" na unknown).
     # ------------------------------
+    # cache poprzednich wartości
+    last_place_id = entry.options.get(OPT_SELECTED_PLACE_ID) or place_coordinator.data.get("server_default_id")
+    last_day = entry.options.get(OPT_SELECTED_DAY)
+
     @callback
     async def _on_options_changed(hass: HomeAssistant, updated_entry: ConfigEntry) -> None:
+        nonlocal last_place_id, last_day
         if updated_entry.entry_id != entry.entry_id:
             return
 
-        changed = False
+        new_place_id = updated_entry.options.get(OPT_SELECTED_PLACE_ID) or place_coordinator.data.get("server_default_id")
+        new_day = updated_entry.options.get(OPT_SELECTED_DAY)
 
-        # Jeśli zmieniło się miejsce – odśwież daty i godziny oraz wyczyść niekompatybilne wybory
-        if OPT_SELECTED_PLACE_ID in updated_entry.options:
+        # 1) Zmiana miejsca?
+        if new_place_id != last_place_id:
             await day_coordinator.async_request_refresh()
             await hour_coordinator.async_request_refresh()
-            changed = True
-            # walidacja: jeśli wybrany day nie jest na liście, wyczyść
-            dc = day_coordinator.data or {}
-            sel_day = updated_entry.options.get(OPT_SELECTED_DAY)
-            if sel_day and sel_day not in (dc.get("dates") or []):
-                _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_DAY: None})
-            # po zmianie miejsca dotychczasowa godzina też raczej nie pasuje
-            if OPT_SELECTED_HOUR in updated_entry.options:
-                _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_HOUR: None})
 
-        # Jeśli zmienił się dzień – odśwież godziny i ewentualnie wyczyść godzinę
-        if OPT_SELECTED_DAY in updated_entry.options:
-            await hour_coordinator.async_request_refresh()
-            changed = True
+            # Po odświeżeniu, jeśli obecna godzina nie jest dostępna – wyczyść ją
             hc = hour_coordinator.data or {}
             sel_hour = updated_entry.options.get(OPT_SELECTED_HOUR)
             if sel_hour and sel_hour not in (hc.get("hours") or []):
                 _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_HOUR: None})
 
-        if changed:
-            return
+            # Zaktualizuj cache
+            last_place_id = new_place_id
+
+        # 2) Zmiana dnia?
+        if new_day != last_day:
+            await hour_coordinator.async_request_refresh()
+            # Po odświeżeniu, jeśli obecna godzina nie jest dostępna – wyczyść ją
+            hc = hour_coordinator.data or {}
+            sel_hour = updated_entry.options.get(OPT_SELECTED_HOUR)
+            if sel_hour and sel_hour not in (hc.get("hours") or []):
+                _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_HOUR: None})
+
+            # Zaktualizuj cache
+            last_day = new_day
 
     entry.add_update_listener(_on_options_changed)
 
@@ -276,7 +283,7 @@ class SmartLunchDeliveryPlaceSelect(CoordinatorEntity, SelectEntity):
     @property
     def options(self) -> list[str]:
         data = self.coordinator.data or {}
-        opts = data.get("options") or {}
+        opts = data.get("options") or []
         return [name for _, name in opts]
 
     @property
