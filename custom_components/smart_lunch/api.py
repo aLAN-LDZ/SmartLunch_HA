@@ -24,6 +24,7 @@ from .const import (
     HTTP_TIMEOUT,
 )
 
+# identyczny wzorzec jak w starym kodzie
 META_CSRF_RE = re.compile(r'<meta\s+name="csrf-token"\s+content="([^"]+)"', re.I)
 
 
@@ -54,7 +55,7 @@ class AuthState:
 
 
 class SmartLunchClient:
-    """Minimalny klient do logowania i walidacji sesji (async)."""
+    """Minimalny klient do logowania i walidacji sesji (async), wierny zachowaniu starego kodu."""
 
     def __init__(
         self,
@@ -67,7 +68,8 @@ class SmartLunchClient:
         self.hass = hass
         self.email = email
         self._password = password  # tylko transientnie (nie zapisujemy w entry)
-        # utwardź base: akceptuj wartości bez schematu
+
+        # utwardź base: akceptuj wartość bez schematu
         _base = base.rstrip("/")
         if "://" not in _base:
             _base = f"https://{_base}"
@@ -84,6 +86,7 @@ class SmartLunchClient:
         }
 
     async def _preflight_csrf(self) -> None:
+        """Zachowanie jak w starym kodzie: pobierz CSRF z '/'."""
         try:
             async with self.session.get(
                 f"{self.base}/",
@@ -92,29 +95,42 @@ class SmartLunchClient:
             ) as r:
                 text = await r.text()
                 m = META_CSRF_RE.search(text)
-                if m:
-                    self.auth.csrf = m.group(1)
+                self.auth.csrf = m.group(1) if m else None
         except Exception:
             self.auth.csrf = None
 
-    def _json_headers(self) -> dict[str, str]:
-        h = dict(self._headers)
-        h["Content-Type"] = "application/json"
+    def _headers_json(self) -> dict[str, str]:
+        """Nagłówki 1:1 ze starego podejścia (Origin, Referer='/', X-Requested-With, X-CSRF-Token)."""
+        h = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": self.base,
+            "Referer": f"{self.base}/",
+            "X-Requested-With": "XMLHttpRequest",
+            "User-Agent": self._headers["User-Agent"],
+        }
         if self.auth.csrf:
             h["X-CSRF-Token"] = self.auth.csrf
-        h["Origin"] = self.base
-        h["Referer"] = f"{self.base}/"
-        h["X-Requested-With"] = "XMLHttpRequest"
         return h
 
     async def login(self) -> dict[str, Any]:
+        """
+        Logowanie jak w starym kodzie:
+        - preflight CSRF z '/'
+        - POST JSON na /users/sign_in
+        - SUKCES = status 200 AND body.success == True AND remember_user_token w cookies
+        """
         if not self._password:
             raise ConfigEntryAuthFailed("Password required for login")
+
+        # 1) preflight CSRF z '/'
         await self._preflight_csrf()
+
+        # 2) POST logowania
         payload = {"user": {"login": self.email, "password": self._password}}
         async with self.session.post(
             f"{self.base}{LOGIN_PATH}",
-            headers=self._json_headers(),
+            headers=self._headers_json(),
             data=json.dumps(payload).encode("utf-8"),
             timeout=ClientTimeout(total=HTTP_TIMEOUT),
         ) as r:
@@ -133,7 +149,12 @@ class SmartLunchClient:
                 and "remember_user_token" in jar
             )
             if not ok:
-                detail = resp_json or (await r.text())[:300]
+                detail: Any = resp_json
+                if detail is None:
+                    try:
+                        detail = (await r.text())[:300]
+                    except Exception:
+                        detail = f"HTTP {r.status}"
                 raise ValueError(f"Login failed: {r.status} {detail}")
 
             token_exp = decode_remember_token_expiry(jar.get("remember_user_token", ""))
@@ -157,11 +178,10 @@ class SmartLunchClient:
             return False
 
     def attach_cookies(self, cookies: dict[str, str]) -> None:
-        """Wstaw znane ciastka do cookie_jar (wymaga obiektu URL)."""
+        """Wstaw znane ciastka do cookie_jar (jak w starym kodzie, ale poprawnie dla aiohttp)."""
         self.session.cookie_jar.clear()
-        # możesz podać wszystkie na raz:
+        # wszystkie na raz; bazowy URL jako yarl.URL (wymagane przez aiohttp)
         self.session.cookie_jar.update_cookies(cookies, response_url=self.base_url)
-        # (albo iteracyjnie – ale powyższe wystarcza)
 
     async def _request_json(self, method: str, path: str, **kwargs: Any) -> Any:
         """
@@ -180,5 +200,4 @@ class SmartLunchClient:
             if r.status in (401, 403, 419):
                 raise ConfigEntryAuthFailed("Session expired")
             r.raise_for_status()
-            # zakładamy JSON – dostosujemy w razie innych endpointów
             return await r.json()
