@@ -6,6 +6,7 @@ from datetime import timedelta, date, datetime
 from decimal import Decimal
 from typing import Any
 
+from yarl import URL
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -20,9 +21,7 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import DOMAIN
-
-# do dekodowania expiry z ciasteczka
-from .api import decode_remember_token_expiry
+from .api import decode_remember_token_expiry  # dekodowanie expiry z cookie
 
 _LOGGER = logging.getLogger(__name__)
 PARALLEL_UPDATES = 0
@@ -31,6 +30,20 @@ PARALLEL_UPDATES = 0
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
     client = data["client"]
+
+    # --- przygotuj device_info: z hass.data albo fallback z entry.data ---
+    device_info = data.get("device_info")
+    if not device_info:
+        email = (entry.data.get("email") or "unknown").lower()
+        base = entry.data.get("base") or "https://app.smartlunch.pl"
+        if "://" not in base:
+            base = f"https://{base}"
+        host = URL(base).host or "app.smartlunch.pl"
+        device_info = {
+            "identifiers": {(DOMAIN, f"{email}|{host}")},
+            "name": f"SmartLunch ({email})",
+            "configuration_url": f"{URL(base)}",
+        }
 
     # ---- KOORDYNATOR: FUNDING (zapyta API) ----
     async def _async_update_funding() -> dict[str, Any]:
@@ -65,7 +78,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             exp: datetime | None = decode_remember_token_expiry(token) if token else None
             return {"expiry": exp}
         except Exception as e:
-            # nie powinno się zdarzyć, ale gdyby… nie wysadzamy całej platformy
             _LOGGER.debug("Token expiry update failed: %s", e)
             return {"expiry": None}
 
@@ -79,8 +91,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     await token_coordinator.async_config_entry_first_refresh()
 
     entities = [
-        SmartLunchMonthlyFundingRemainingSensor(funding_coordinator, entry),
-        SmartLunchTokenExpirySensor(token_coordinator, entry),
+        SmartLunchMonthlyFundingRemainingSensor(funding_coordinator, entry, device_info),
+        SmartLunchTokenExpirySensor(token_coordinator, entry, device_info),
     ]
     async_add_entities(entities)
 
@@ -93,10 +105,16 @@ class SmartLunchMonthlyFundingRemainingSensor(CoordinatorEntity, SensorEntity):
     _attr_native_unit_of_measurement = "PLN"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, coordinator: DataUpdateCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: DataUpdateCoordinator, entry: ConfigEntry, device_info: dict) -> None:
         super().__init__(coordinator)
         self._entry = entry
+        self._device_info = device_info
         self._attr_unique_id = f"{entry.entry_id}_monthly_funding_remaining"
+
+    @property
+    def device_info(self) -> dict:
+        # To „przypina” encję do jednego urządzenia w Device Registry
+        return self._device_info
 
     @property
     def available(self) -> bool:
@@ -138,12 +156,17 @@ class SmartLunchTokenExpirySensor(CoordinatorEntity, SensorEntity):
     _attr_name = "Token – data wygaśnięcia"
     _attr_icon = "mdi:timer-sand-complete"
     _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_state_class = None  # timestamp nie powinien mieć state_class
+    _attr_state_class = None  # timestamp nie ma state_class
 
-    def __init__(self, coordinator: DataUpdateCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: DataUpdateCoordinator, entry: ConfigEntry, device_info: dict) -> None:
         super().__init__(coordinator)
         self._entry = entry
+        self._device_info = device_info
         self._attr_unique_id = f"{entry.entry_id}_token_expiry"
+
+    @property
+    def device_info(self) -> dict:
+        return self._device_info
 
     @property
     def available(self) -> bool:
@@ -159,5 +182,4 @@ class SmartLunchTokenExpirySensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        # nic szczególnego – można dopisać surowe cookie albo źródło, ale to wrażliwe
         return {}

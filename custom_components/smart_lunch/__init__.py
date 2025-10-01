@@ -1,7 +1,7 @@
+# custom_components/smart_lunch/__init__.py
 from __future__ import annotations
 
-from typing import Any
-
+from yarl import URL
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -9,7 +9,6 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import SmartLunchClient
 from .const import DOMAIN, PLATFORMS
-
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     session = async_get_clientsession(hass, verify_ssl=True)
@@ -22,19 +21,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if cookies:
         client.attach_cookies(cookies)
         if not await client.validate_session():
-            # Bez hasła nie próbujemy cichego relogu – pozwalamy HA wywołać reauth
             raise ConfigEntryAuthFailed("Session expired")
     else:
-        # Brak cookies – wymagamy logowania przez flow
         raise ConfigEntryAuthFailed("No session; reauth required")
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"client": client}
+    base_url = URL(client.base)
+    device_identifiers = {(DOMAIN, f"{email.lower()}|{base_url.host}")}
+
+    device_info = {
+        "identifiers": device_identifiers,            # WYMAGANE do spięcia encji z urządzeniem
+        "name": f"SmartLunch ({email})",             # Nazwa urządzenia w HA
+        "configuration_url": str(base_url),          # Link „Konfiguracja” w karcie urządzenia
+        "manufacturer": "SmartLunch",                # opcjonalnie
+        "model": "API",                             # opcjonalnie
+    }
+
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        "client": client,
+        "device_info": device_info,  # 👈 udostępniamy platformom
+    }
 
     if PLATFORMS:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
     return True
-
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if PLATFORMS:
