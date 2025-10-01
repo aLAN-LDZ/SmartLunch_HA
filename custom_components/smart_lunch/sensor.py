@@ -99,7 +99,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 class SmartLunchMonthlyFundingRemainingSensor(CoordinatorEntity, SensorEntity):
     _attr_has_entity_name = True
-    _attr_name = "Miesięczne dofinansowanie – pozostało"
+    _attr_name = "Portfel"
     _attr_icon = "mdi:cash"
     _attr_device_class = SensorDeviceClass.MONETARY
     _attr_native_unit_of_measurement = "PLN"
@@ -153,7 +153,7 @@ class SmartLunchMonthlyFundingRemainingSensor(CoordinatorEntity, SensorEntity):
 
 class SmartLunchTokenExpirySensor(CoordinatorEntity, SensorEntity):
     _attr_has_entity_name = True
-    _attr_name = "Token – data wygaśnięcia"
+    _attr_name = "Token ważny do"
     _attr_icon = "mdi:timer-sand-complete"
     _attr_device_class = SensorDeviceClass.TIMESTAMP
     _attr_state_class = None  # timestamp nie ma state_class

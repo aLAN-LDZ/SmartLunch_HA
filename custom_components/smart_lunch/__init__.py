@@ -30,7 +30,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     device_info = {
         "identifiers": device_identifiers,            # WYMAGANE do spięcia encji z urządzeniem
-        "name": f"SmartLunch ({email})",             # Nazwa urządzenia w HA
+        "name": f"Smart Lunch",             # Nazwa urządzenia w HA
         "configuration_url": str(base_url),          # Link „Konfiguracja” w karcie urządzenia
         "manufacturer": "SmartLunch",                # opcjonalnie
         "model": "API",                             # opcjonalnie
