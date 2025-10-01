@@ -227,7 +227,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_HOUR: None})
 
         if changed:
-            # Zapisane wyżej patche już zawołają write_ha_state przez listener’y encji
             return
 
     entry.add_update_listener(_on_options_changed)
@@ -238,10 +237,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 # ===========================
 
 class SmartLunchDeliveryPlaceSelect(CoordinatorEntity, SelectEntity):
-    """Select: lokalny wybór miejsca dostawy (opcje z serwera)."""
+    """Select: wybór miejsca dostawy (opcje z serwera, zapis lokalny)."""
 
     _attr_has_entity_name = True
-    _attr_name = "Miejsce dostawy (lokalny wybór)"
+    _attr_name = "Miejsce dostawy"
     _attr_icon = "mdi:map-marker"
     _attr_state_class = None
 
@@ -277,25 +276,19 @@ class SmartLunchDeliveryPlaceSelect(CoordinatorEntity, SelectEntity):
     @property
     def options(self) -> list[str]:
         data = self.coordinator.data or {}
-        opts = data.get("options") or []
+        opts = data.get("options") or {}
         return [name for _, name in opts]
-
-    def _selected_id(self) -> int | None:
-        data = self.coordinator.data or {}
-        local_id = self._entry.options.get(OPT_SELECTED_PLACE_ID)
-        if local_id is not None:
-            try:
-                return int(local_id)
-            except Exception:
-                pass
-        return data.get("server_default_id")
 
     @property
     def current_option(self) -> str | None:
+        """Zawsze pokazuj ostatni zapisany wybór (jeśli jest)."""
         data = self.coordinator.data or {}
         id_to_name: dict[int, str] = data.get("id_to_name") or {}
-        sid = self._selected_id()
-        return id_to_name.get(sid) if sid is not None else None
+        sid = self._entry.options.get(OPT_SELECTED_PLACE_ID)
+        try:
+            return id_to_name.get(int(sid)) if sid is not None else None
+        except Exception:
+            return None
 
     async def async_select_option(self, option: str) -> None:
         data = self.coordinator.data or {}
@@ -307,26 +300,24 @@ class SmartLunchDeliveryPlaceSelect(CoordinatorEntity, SelectEntity):
             _LOGGER.warning("Nie znaleziono ID dla opcji '%s'", option)
             return
 
-        # zapisz lokalnie i odśwież widok
         _safe_update_entry_options(self.hass, self._entry, {OPT_SELECTED_PLACE_ID: int(place_id)})
         self.async_write_ha_state()
 
     @property
     def extra_state_attributes(self):
         data = self.coordinator.data or {}
-        sid = self._selected_id()
         return {
-            "selected_id": sid,
+            "selected_id": self._entry.options.get(OPT_SELECTED_PLACE_ID),
             "server_default_id": data.get("server_default_id"),
             "id_to_name": data.get("id_to_name"),
         }
 
 
 class SmartLunchDeliveryDaySelect(CoordinatorEntity, SelectEntity):
-    """Select: lokalny wybór daty dostawy (opcje z serwera, zależne od miejsca)."""
+    """Select: wybór daty dostawy (opcje z serwera, zależne od miejsca, zapis lokalny)."""
 
     _attr_has_entity_name = True
-    _attr_name = "Data dostawy (lokalny wybór)"
+    _attr_name = "Data dostawy"
     _attr_icon = "mdi:calendar"
     _attr_state_class = None
 
@@ -366,12 +357,9 @@ class SmartLunchDeliveryDaySelect(CoordinatorEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
+        """Zawsze pokazuj ostatni zapisany wybór (jeśli jest)."""
         sel = self._entry.options.get(OPT_SELECTED_DAY)
-        data = self.coordinator.data or {}
-        dates = data.get("dates") or []
-        if sel in dates:
-            return sel
-        return None
+        return sel if sel else None
 
     async def async_select_option(self, option: str) -> None:
         data = self.coordinator.data or {}
@@ -392,10 +380,10 @@ class SmartLunchDeliveryDaySelect(CoordinatorEntity, SelectEntity):
 
 
 class SmartLunchDeliveryHourSelect(CoordinatorEntity, SelectEntity):
-    """Select: lokalny wybór godziny dostawy (opcje z serwera, zależne od miejsca i dnia)."""
+    """Select: wybór godziny dostawy (opcje z serwera, zależne od miejsca i dnia, zapis lokalny)."""
 
     _attr_has_entity_name = True
-    _attr_name = "Godzina dostawy (lokalny wybór)"
+    _attr_name = "Godzina dostawy"
     _attr_icon = "mdi:clock-time-four-outline"
     _attr_state_class = None
 
@@ -435,12 +423,9 @@ class SmartLunchDeliveryHourSelect(CoordinatorEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
+        """Zawsze pokazuj ostatni zapisany wybór (jeśli jest)."""
         sel = self._entry.options.get(OPT_SELECTED_HOUR)
-        data = self.coordinator.data or {}
-        hours = data.get("hours") or []
-        if sel in hours:
-            return sel
-        return None
+        return sel if sel else None
 
     async def async_select_option(self, option: str) -> None:
         data = self.coordinator.data or {}
