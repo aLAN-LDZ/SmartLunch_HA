@@ -136,7 +136,7 @@ class SmartLunchMonthlyFundingRemainingSensor(CoordinatorEntity, SensorEntity):
     _attr_icon = "mdi:cash"
     _attr_device_class = SensorDeviceClass.MONETARY
     _attr_native_unit_of_measurement = "PLN"
-    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_state_class = None
 
     def __init__(self, coordinator: DataUpdateCoordinator, entry: ConfigEntry, device_info: dict) -> None:
         super().__init__(coordinator)

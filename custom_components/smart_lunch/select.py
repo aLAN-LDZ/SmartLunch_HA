@@ -27,10 +27,19 @@ OPT_SELECTED_CATEGORY_ID = "selected_menu_category_id"
 
 
 def _safe_update_entry_options(hass: HomeAssistant, entry: ConfigEntry, patch: dict[str, Any]) -> None:
-    """Bezpiecznie nadpisz część options (merge)."""
     new_options = dict(entry.options)
     new_options.update(patch)
     hass.config_entries.async_update_entry(entry, options=new_options)
+
+
+async def _safe_first_refresh(coordinator: DataUpdateCoordinator, empty: dict[str, Any]) -> None:
+    """Pierwszy refresh bez wysadzania platformy – w razie błędu ustaw puste dane."""
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except Exception as e:
+        _LOGGER.warning("Smart Lunch: pierwszy refresh '%s' nieudany: %s. Startuję z pustymi danymi.",
+                        coordinator.name, e)
+        coordinator.async_set_updated_data(empty)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
@@ -42,7 +51,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # SELECT 1: MIEJSCE DOSTAWY
     # ------------------------------
     async def _async_update_places() -> dict[str, Any]:
-        """Pobierz listę miejsc dostawy (ZAWSZE z serwera)."""
         try:
             dp = await client.fetch_delivery_places()
             options: list[tuple[int, str]] = []
@@ -60,8 +68,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
             id_to_name = {pid: name for pid, name in options}
             return {
-                "options": options,               # [(id, name), ...]
-                "id_to_name": id_to_name,         # {id: name}
+                "options": options,
+                "id_to_name": id_to_name,
                 "server_default_id": server_default_id,
                 "raw": dp,
             }
@@ -75,7 +83,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         update_method=_async_update_places,
         update_interval=timedelta(minutes=15),
     )
-    await place_coordinator.async_config_entry_first_refresh()
+    await _safe_first_refresh(place_coordinator, {"options": [], "id_to_name": {}, "server_default_id": None})
 
     place_entity = SmartLunchDeliveryPlaceSelect(hass, place_coordinator, entry, device_info)
     async_add_entities([place_entity])
@@ -89,7 +97,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # SELECT 2: DATA DOSTAWY (zależny od miejsca)
     # ------------------------------
     async def _async_update_days() -> dict[str, Any]:
-        """Pobierz dostępne daty dla aktualnego miejsca (ZAWSZE z serwera)."""
         try:
             current_place_id = entry.options.get(OPT_SELECTED_PLACE_ID)
             if current_place_id is None:
@@ -100,11 +107,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
             place_id_int = int(current_place_id)
             dd = await client.fetch_delivery_dates(place_id_int)
-            dates = []
-            for item in dd.get("delivery_dates", []):
-                d = item.get("date")
-                if d:
-                    dates.append(d)
+            dates = [it.get("date") for it in dd.get("delivery_dates", []) if it.get("date")]
 
             selected_day = entry.options.get(OPT_SELECTED_DAY)
             if selected_day not in dates:
@@ -126,7 +129,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         update_method=_async_update_days,
         update_interval=timedelta(minutes=15),
     )
-    await day_coordinator.async_config_entry_first_refresh()
+    await _safe_first_refresh(day_coordinator, {"place_id": None, "dates": [], "selected_day": None})
 
     day_entity = SmartLunchDeliveryDaySelect(hass, day_coordinator, entry, device_info)
     async_add_entities([day_entity])
@@ -135,7 +138,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # SELECT 3: GODZINA DOSTAWY (zależny od miejsca i dnia)
     # ------------------------------
     async def _async_update_hours() -> dict[str, Any]:
-        """Pobierz dostępne godziny dla aktualnego miejsca i dnia (ZAWSZE z serwera)."""
         try:
             current_place_id = entry.options.get(OPT_SELECTED_PLACE_ID)
             if current_place_id is None:
@@ -152,9 +154,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             hours: list[str] = []
             for item in dd.get("delivery_dates", []):
                 if item.get("date") == current_day:
-                    for h in item.get("hours", []) or []:
-                        if isinstance(h, str):
-                            hours.append(h)
+                    hours = [h for h in (item.get("hours") or []) if isinstance(h, str)]
                     break
 
             selected_hour = entry.options.get(OPT_SELECTED_HOUR)
@@ -178,7 +178,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         update_method=_async_update_hours,
         update_interval=timedelta(minutes=15),
     )
-    await hour_coordinator.async_config_entry_first_refresh()
+    await _safe_first_refresh(hour_coordinator, {"place_id": None, "day": None, "hours": [], "selected_hour": None})
 
     hour_entity = SmartLunchDeliveryHourSelect(hass, hour_coordinator, entry, device_info)
     async_add_entities([hour_entity])
@@ -187,7 +187,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # SELECT 4: KATEGORIA MENU (zależny od miejsca + dnia + godziny)
     # ------------------------------
     async def _async_update_categories() -> dict[str, Any]:
-        """Pobierz kategorie menu dla (miejsce, dzień, godzina) – ZAWSZE z serwera."""
         try:
             place_id = entry.options.get(OPT_SELECTED_PLACE_ID) or place_coordinator.data.get("server_default_id")
             day = entry.options.get(OPT_SELECTED_DAY)
@@ -198,7 +197,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
             pid = int(place_id)
             cats = await client.fetch_menu_categories(day, hour, pid)
-            # normalizujemy: lista dict, interesują nas id + nazwa
+
             options: list[tuple[int, str]] = []
             id_to_name: dict[int, str] = {}
             for c in cats:
@@ -218,8 +217,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 "place_id": pid,
                 "day": day,
                 "hour": hour,
-                "categories": options,     # [(id, name)]
-                "id_to_name": id_to_name,  # {id: name}
+                "categories": options,
+                "id_to_name": id_to_name,
                 "selected_category_id": selected_cat,
                 "raw": cats,
             }
@@ -233,7 +232,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         update_method=_async_update_categories,
         update_interval=timedelta(minutes=15),
     )
-    await category_coordinator.async_config_entry_first_refresh()
+    await _safe_first_refresh(category_coordinator, {
+        "place_id": None, "day": None, "hour": None,
+        "categories": [], "id_to_name": {}, "selected_category_id": None
+    })
 
     category_entity = SmartLunchMenuCategorySelect(hass, category_coordinator, entry, device_info)
     async_add_entities([category_entity])
@@ -255,23 +257,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         new_day = updated_entry.options.get(OPT_SELECTED_DAY)
         new_hour = updated_entry.options.get(OPT_SELECTED_HOUR)
 
-        # 1) Zmiana miejsca → odśwież dni, godziny, kategorie; wyczyść niekompatybilne wybory
         if new_place_id != last_place_id:
             await day_coordinator.async_request_refresh()
             await hour_coordinator.async_request_refresh()
             await category_coordinator.async_request_refresh()
 
-            # Walidacje po odświeżeniach
             dc = day_coordinator.data or {}
             if updated_entry.options.get(OPT_SELECTED_DAY) not in (dc.get("dates") or []):
-                _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_DAY: None})
-                _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_HOUR: None})
-                _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_CATEGORY_ID: None})
+                _safe_update_entry_options(hass, updated_entry, {
+                    OPT_SELECTED_DAY: None, OPT_SELECTED_HOUR: None, OPT_SELECTED_CATEGORY_ID: None
+                })
             else:
                 hc = hour_coordinator.data or {}
                 if updated_entry.options.get(OPT_SELECTED_HOUR) not in (hc.get("hours") or []):
-                    _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_HOUR: None})
-                    _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_CATEGORY_ID: None})
+                    _safe_update_entry_options(hass, updated_entry, {
+                        OPT_SELECTED_HOUR: None, OPT_SELECTED_CATEGORY_ID: None
+                    })
                 else:
                     cc = category_coordinator.data or {}
                     sel_cat = updated_entry.options.get(OPT_SELECTED_CATEGORY_ID)
@@ -280,15 +281,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
             last_place_id = new_place_id
 
-        # 2) Zmiana dnia → odśwież godziny, kategorie; wyczyść niekompatybilne
         if new_day != last_day:
             await hour_coordinator.async_request_refresh()
             await category_coordinator.async_request_refresh()
 
             hc = hour_coordinator.data or {}
             if updated_entry.options.get(OPT_SELECTED_HOUR) not in (hc.get("hours") or []):
-                _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_HOUR: None})
-                _safe_update_entry_options(hass, updated_entry, {OPT_SELECTED_CATEGORY_ID: None})
+                _safe_update_entry_options(hass, updated_entry, {
+                    OPT_SELECTED_HOUR: None, OPT_SELECTED_CATEGORY_ID: None
+                })
             else:
                 cc = category_coordinator.data or {}
                 sel_cat = updated_entry.options.get(OPT_SELECTED_CATEGORY_ID)
@@ -297,7 +298,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
             last_day = new_day
 
-        # 3) Zmiana godziny → odśwież kategorie; wyczyść niekompatybilne
         if new_hour != last_hour:
             await category_coordinator.async_request_refresh()
 
@@ -316,8 +316,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 # ===========================
 
 class SmartLunchDeliveryPlaceSelect(CoordinatorEntity, SelectEntity):
-    """Select: wybór miejsca dostawy (opcje z serwera, zapis lokalny)."""
-
     _attr_has_entity_name = True
     _attr_name = "Miejsce dostawy"
     _attr_icon = "mdi:map-marker"
@@ -392,8 +390,6 @@ class SmartLunchDeliveryPlaceSelect(CoordinatorEntity, SelectEntity):
 
 
 class SmartLunchDeliveryDaySelect(CoordinatorEntity, SelectEntity):
-    """Select: wybór daty dostawy (opcje z serwera, zależne od miejsca, zapis lokalny)."""
-
     _attr_has_entity_name = True
     _attr_name = "Data dostawy"
     _attr_icon = "mdi:calendar"
@@ -457,8 +453,6 @@ class SmartLunchDeliveryDaySelect(CoordinatorEntity, SelectEntity):
 
 
 class SmartLunchDeliveryHourSelect(CoordinatorEntity, SelectEntity):
-    """Select: wybór godziny dostawy (opcje z serwera, zależne od miejsca i dnia, zapis lokalny)."""
-
     _attr_has_entity_name = True
     _attr_name = "Godzina dostawy"
     _attr_icon = "mdi:clock-time-four-outline"
@@ -526,8 +520,6 @@ class SmartLunchDeliveryHourSelect(CoordinatorEntity, SelectEntity):
 
 
 class SmartLunchMenuCategorySelect(CoordinatorEntity, SelectEntity):
-    """Select: wybór kategorii menu (opcje z serwera, zależne od miejsca/dnia/godziny, zapis lokalny)."""
-
     _attr_has_entity_name = True
     _attr_name = "Kategoria menu"
     _attr_icon = "mdi:tag-text-outline"
@@ -565,12 +557,11 @@ class SmartLunchMenuCategorySelect(CoordinatorEntity, SelectEntity):
     @property
     def options(self) -> list[str]:
         data = self.coordinator.data or {}
-        opts = data.get("categories") or []  # [(id, name)]
+        opts = data.get("categories") or []
         return [name for _, name in opts]
 
     @property
     def current_option(self) -> str | None:
-        """Zawsze pokazuj ostatni zapisany wybór (jeśli jest)."""
         data = self.coordinator.data or {}
         id_to_name: dict[int, str] = data.get("id_to_name") or {}
         sel = self._entry.options.get(OPT_SELECTED_CATEGORY_ID)
