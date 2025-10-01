@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Połącz ze SmartLunch",
+        "data": {
+          "email": "Email",
+          "password": "Hasło",
+          "base": "Adres bazowy"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Ponowne logowanie SmartLunch",
+        "description": "Podaj ponownie hasło dla {email}",
+        "data": {
+          "password": "Hasło"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Brak połączenia",
+      "invalid_auth": "Błędne dane logowania"
+    },
+    "abort": {
+      "reauth_successful": "Ponowne logowanie zakończone sukcesem"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+DOMAIN = "smart_lunch"
+PLATFORMS: list[str] = [] # na razie brak encji – tylko logowanie (placeholder na przyszłe platformy)
+DEFAULT_BASE = "https://app.smartlunch.pl"
+LOGIN_PATH = "/users/sign_in"
+USERS_ME_PATH = "/employees/api/v1/users"
+USER_AGENT = "homeassistant-smartlunch/0.1"
+COOKIE_KEYS = ["_smartlunch_session", "remember_user_token", "lang", "country"]
+HTTP_TIMEOUT = 25
+RETRY_STATUSES = {429, 500, 502, 503, 504}

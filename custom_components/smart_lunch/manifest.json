@@ -1,0 +1,13 @@
+{
+  "domain": "smart_lunch",
+  "name": "Smart Lunch",
+  "codeowners": ["@aLAN-LDZ"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/aLAN-LDZ/SmartLunch_HA",
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/aLAN-LDZ/SmartLunch_HA/issues",
+  "requirements": [],
+  "version": "0.0.1"
+}
