@@ -206,3 +206,22 @@ class SmartLunchClient:
         from .const import FUNDING_PATH_TPL
         path = FUNDING_PATH_TPL.format(day=day_iso)
         return await self._request_json("GET", path)
+
+    async def fetch_delivery_places(self) -> dict[str, Any]:
+        """Pobierz listę miejsc dostawy (jak w starym kodzie)."""
+        from .const import DELIVERY_PLACES_PATH
+        return await self._request_json("GET", DELIVERY_PLACES_PATH)
+
+    @staticmethod
+    def choose_default_delivery_place_id(dp_json: dict[str, Any]) -> int | None:
+        """Wybierz domyślne place_id z odpowiedzi API."""
+        for comp in (dp_json or {}).get("companies_delivery_places", []) or []:
+            for dp in comp.get("delivery_places", []) or []:
+                if dp.get("default") is True:
+                    return dp.get("id")
+        # fallback: pierwszy z listy
+        for comp in (dp_json or {}).get("companies_delivery_places", []) or []:
+            arr = comp.get("delivery_places", []) or []
+            if arr:
+                return arr[0].get("id")
+        return None

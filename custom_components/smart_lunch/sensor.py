@@ -41,7 +41,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         host = URL(base).host or "app.smartlunch.pl"
         device_info = {
             "identifiers": {(DOMAIN, f"{email}|{host}")},
-            "name": f"SmartLunch ({email})",
+            "name": "Smart Lunch",  # prostsza, stała nazwa urządzenia
             "configuration_url": f"{URL(base)}",
         }
 
@@ -90,9 +90,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     )
     await token_coordinator.async_config_entry_first_refresh()
 
+    # ---- KOORDYNATOR: DOMYŚLNA LOKALIZACJA (zawsze z serwera) ----
+    async def _async_update_default_place() -> dict[str, Any]:
+        try:
+            # wymagane metody w api.py:
+            #   - fetch_delivery_places()
+            #   - choose_default_delivery_place_id(dp_json)
+            dp = await client.fetch_delivery_places()
+            default_id = client.choose_default_delivery_place_id(dp)
+            default_name = None
+            if default_id is not None:
+                for comp in dp.get("companies_delivery_places", []):
+                    for loc in comp.get("delivery_places", []):
+                        if loc.get("id") == default_id:
+                            default_name = loc.get("name_pl") or loc.get("name") or f"Place {default_id}"
+                            break
+            return {
+                "default_id": default_id,
+                "default_name": default_name,
+                "raw": dp,
+            }
+        except Exception as e:
+            raise UpdateFailed(str(e)) from e
+
+    default_place_coordinator = DataUpdateCoordinator(
+        hass,
+        logger=_LOGGER,
+        name="smart_lunch_default_place",
+        update_method=_async_update_default_place,
+        update_interval=timedelta(minutes=15),
+    )
+    await default_place_coordinator.async_config_entry_first_refresh()
+
     entities = [
         SmartLunchMonthlyFundingRemainingSensor(funding_coordinator, entry, device_info),
         SmartLunchTokenExpirySensor(token_coordinator, entry, device_info),
+        SmartLunchDefaultPlaceSensor(default_place_coordinator, entry, device_info),  # NOWA encja
     ]
     async_add_entities(entities)
 
@@ -113,7 +146,6 @@ class SmartLunchMonthlyFundingRemainingSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self) -> dict:
-        # To „przypina” encję do jednego urządzenia w Device Registry
         return self._device_info
 
     @property
@@ -175,11 +207,46 @@ class SmartLunchTokenExpirySensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        """Zwraca timezone-aware datetime (UTC) lub None."""
         data = self.coordinator.data or {}
         exp: datetime | None = data.get("expiry")
-        return exp  # HA oczekuje obiektu datetime dla device_class=timestamp
+        return exp
 
     @property
     def extra_state_attributes(self):
         return {}
+
+
+class SmartLunchDefaultPlaceSensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
+    _attr_name = "Domyślna lokalizacja"
+    _attr_icon = "mdi:map-marker-check"
+    _attr_device_class = None
+    _attr_state_class = None
+
+    def __init__(self, coordinator: DataUpdateCoordinator, entry: ConfigEntry, device_info: dict) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._device_info = device_info
+        self._attr_unique_id = f"{entry.entry_id}_default_place"
+
+    @property
+    def device_info(self) -> dict:
+        return self._device_info
+
+    @property
+    def available(self) -> bool:
+        data = self.coordinator.data or {}
+        return data.get("default_id") is not None
+
+    @property
+    def native_value(self):
+        data = self.coordinator.data or {}
+        # Nazwa jest czytelniejsza jako stan sensora
+        return data.get("default_name")
+
+    @property
+    def extra_state_attributes(self):
+        data = self.coordinator.data or {}
+        return {
+            "default_id": data.get("default_id"),
+        }
