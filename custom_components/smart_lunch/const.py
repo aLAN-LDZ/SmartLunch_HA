@@ -6,6 +6,7 @@ LOGIN_PATH = "/users/sign_in"
 USERS_ME_PATH = "/employees/api/v1/users"
 FUNDING_PATH_TPL = "/employees/api/v1/funding_settings/{day}"
 DELIVERY_PLACES_PATH = "/employees/api/v1/delivery_places"
+DELIVERY_DATES_PATH = "/employees/api/v3/delivery_dates"
 
 USER_AGENT = "homeassistant-smartlunch/0.1"
 COOKIE_KEYS = ["_smartlunch_session", "remember_user_token", "lang", "country"]

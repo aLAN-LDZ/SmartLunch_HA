@@ -225,3 +225,8 @@ class SmartLunchClient:
             if arr:
                 return arr[0].get("id")
         return None
+    
+    async def fetch_delivery_dates(self, delivery_place_id: int) -> dict[str, Any]:
+        """Pobierz dostępne daty (i godziny) dla danego miejsca dostawy."""
+        from .const import DELIVERY_DATES_PATH
+        return await self._request_json("GET", DELIVERY_DATES_PATH, params={"delivery_place_id": delivery_place_id})
